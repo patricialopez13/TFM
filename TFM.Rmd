@@ -1,0 +1,1471 @@
+---
+title: "TFM"
+author: "Patricia López Ozcoz"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+# SIMULACIÓN DE LA BASE DE DATOS DE SINIESTROS
+
+Librerias
+
+
+```{r, echo=FALSE, include=FALSE}
+# Establecimiento de directorio de trabajo
+#setwd("/Users/patrilopez/Desktop/UNI/Máster/2o año/2º Semestre/TFM/Datos R")
+#getwd()
+## Paquetes a usar
+##install.packages("SynthETIC") 
+#install.packages("plyr") 
+#install.packages("locfit")
+#install.packages("dplyr")
+#install.packages("actuar")
+#install.packages("tidyr")
+#install.packages("reshape2")
+#install.packages("ChainLadder", dependencies = TRUE)
+#install.packages('Rcpp')
+#install.packages("dplyr") 
+#install.packages("ggplot2")
+#install.packages("lattice") 
+#install.packages("caTools") 
+#install.packages('openxlsx') 
+```
+
+```{r}
+library(SynthETIC) 
+library(dplyr) 
+library(openxlsx)
+library(tidyverse)
+library(skimr)
+library(GGally)
+library(corrplot)
+library(DataExplorer)
+library(ggplot2)
+library(tidyr)
+library(randomForest)
+library(caret)
+library(glmnet)
+library(gbm) 
+library(nnet)
+library(class)
+library(reshape2)
+library(openxlsx) 
+library(ChainLadder) 
+library(writexl)
+```
+
+Base de datos
+
+```{r}
+#ref_claim = 1 # divisa = 1
+#time_unit = 1/12 # Consideramos el desarrollo de siniestros mensuales
+#set_parameters(ref_claim = ref_claim, time_unit = time_unit)
+#years = 10 # número de años de ocurrencia
+#I = years/time_unit # número de periodos
+#source("./functions simulation.R")
+#PathData = "./Data/"
+#PathResults = "./Results/"
+#PathPlot = "./Plots/"
+#claims_list = data.generation(seed = 123, future_info = FALSE) 
+#siniestros = claims_list[[1]]
+#pagos = claims_list[[2]]
+```
+
+
+Tratamiento adicional de la base de datos simulada
+```{r}
+#siniestros$AccYearMonth = as.integer(x = format(x = siniestros$AccDate,'%m'))
+#siniestros$RepYearMonth = as.integer(x = format(x = siniestros$RepDate,'%m'))
+#siniestros$SetDelDays = as.numeric(x = siniestros$SetDelMonths * 30)
+#siniestros$RepDelMonths = as.numeric(x = siniestros$RepDelDays / 30)
+#siniestros$AccYear = as.integer(x = format(x = siniestros$AccDate,'%Y'))
+#siniestros$RepYear = as.integer(x = format(x = siniestros$RepDate,'%Y'))
+
+#write.csv(x = siniestros, file = paste(PathData, "siniestros.csv", sep = ""))
+#write.csv(x = pagos, file = paste(PathData, "pagos.csv", sep = ""))
+
+#if (!dir.exists(PathData)) {
+#  dir.create(PathData)
+#}
+#write.csv(x = siniestros, file = paste(PathData, "siniestros.csv", sep = ""))
+#write.csv(x = pagos, file = paste(PathData, "pagos.csv", sep = ""))
+```
+
+Datos ya generados y guardados
+```{r}
+#siniestros <- read.csv("~/Desktop/UNI/Master/2o año/2º Semestre/TFM/Datos R/Data/siniestros 3.csv")
+#pagos <- read.csv("~/Desktop/UNI/Master/2o año/2º Semestre/TFM/Datos R/Data/pagos 3.csv")
+
+siniestros <- read.csv("siniestros 3.csv")
+pagos <- read.csv("pagos 3.csv")
+```
+
+# ANÁLISIS DESCRIPTIVO
+
+```{r}
+siniestros_limpio <- siniestros %>%
+  filter(Status %in% c("Closed", "RBNS"))
+
+table(siniestros_limpio$Status)
+summary(siniestros_limpio)
+```
+
+*ANÁLISIS DESCRIPTIVO GENERAL*
+
+```{r}
+skim(siniestros_limpio)
+introduce(siniestros_limpio)
+plot_intro(siniestros_limpio)
+```
+
+BBDD SINIESTROS
+```{r}
+# Estructura y primeras filas
+str(siniestros)
+head(siniestros)
+
+# Estadísticos de variables numéricas
+summary(siniestros)
+
+# Tablas de frecuencias para variables categóricas
+table(siniestros$Type)
+table(siniestros$Status)
+table(siniestros$AccMonth)
+table(siniestros$AccWeekday)
+
+# Histograma de edades
+hist(siniestros$Age, main = "Distribución de Edad", xlab = "Edad", col = "skyblue")
+```
+
+BBDD PAGOS
+```{r}
+# Estructura y primeras filas
+str(pagos)
+head(pagos)
+
+# Estadísticos de la variable Paid
+summary(pagos$Paid)
+
+# Histograma de pagos (puedes truncar valores extremos si hay outliers)
+hist(pagos$Paid, breaks = 100, main = "Distribución de Pagos", xlab = "Paid", col = "lightgreen", xlim = c(0, quantile(pagos$Paid, 0.99, na.rm = TRUE)))
+
+# Proporción de pagos negativos (antes de truncar)
+mean(pagos$Paid < 0, na.rm = TRUE)
+```
+
+# PREPARACIÓN DE DATOS Y CONSTRUCCIÓN PANEL INCREMENTAL 
+
+```{r}
+siniestros$Id <- as.numeric(siniestros$Id)
+pagos$Id <- as.numeric(pagos$Id)
+
+# Año de ocurrencia y de pago
+siniestros_p4 <- siniestros %>%
+  mutate(AccYear = year(AccDate))
+
+# Año de Pago en bbdd pagos
+pagos_p5 <- pagos %>%
+  mutate(PayYear = floor((EventMonth - 1)/12) + 2012) %>%
+  left_join(siniestros_p4 %>% select(Id, AccYear), by = "Id") %>%
+  mutate(DevYear = PayYear - AccYear + 1) %>%
+  filter(DevYear >= 1 & DevYear <= 10, AccYear > 2012)
+
+# Pagos incrementales por siniestro y año de desarrollo
+pagos_agg5 <- pagos_p5 %>%
+  group_by(Id, AccYear, DevYear) %>%
+  summarise(CumPaid = sum(Paid, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(CumPaid = pmax(CumPaid, 0))
+
+# Base panel: Solo Ids cuyo AccYear > 2012
+panel5 <- expand.grid(
+  Id = unique(siniestros_p4$Id),
+  DevYear = 1:9
+) %>%
+  left_join(
+    siniestros_p4 %>% 
+      filter(AccYear > 2012) %>%
+      select(Id, AccYear, Type, Age, AccMonth, AccWeekday, RepDelDays, Status),
+    by = "Id"
+  ) %>%
+  arrange(Id, DevYear)
+
+# Unir pagos acumulados (panel pagos_agg5)
+panel5 <- panel5 %>%
+  left_join(pagos_agg5, by = c("Id", "AccYear", "DevYear")) %>%
+  arrange(Id, DevYear)
+
+panel5 <- panel5 %>%
+  complete(Id, DevYear = 1:9, fill = list(CumPaid = 0)) %>%
+  mutate(CumPaid = ifelse(is.na(CumPaid), 0, CumPaid)) %>%
+  mutate(CumPaid = pmax(CumPaid, 0)) 
+
+# Calcular pagos acumulados
+panel5 <- panel5 %>%
+  arrange(Id, DevYear) %>%
+  group_by(Id) %>%
+  mutate(CumPaidToDate = cumsum(CumPaid)) %>%
+  ungroup()
+
+# Verificar duplicados
+duplicados <- panel5 %>%
+  count(Id, DevYear) %>%
+  filter(n > 1)
+if(nrow(duplicados) > 0) print(duplicados)
+
+# Filtrar solo estados Closed y RBNS (por si acaso)
+panel5 <- panel5 %>%
+  filter(Status %in% c("Closed", "RBNS"))
+
+# Tablas y resumen
+table(panel5$Status)
+table(panel5$AccYear)
+summary(panel5)
+
+# Transformar a factores
+panel5$Type <- as.factor(panel5$Type)
+panel5$Status <- as.factor(panel5$Status)
+panel5$AccWeekday <- as.factor(panel5$AccWeekday)
+panel5$Paid <- panel5$CumPaid
+```
+
+
+
+# ANÁLISIS DE LA VARIABLE OBJETIVO
+
+```{r}
+# Estadísticos descriptivos de Paid
+summary(panel5$Paid)
+```
+
+```{r}
+library(dplyr)
+
+# Tabla por año de origen
+columnas_Paid <- panel5 %>%
+  group_by(AccYear) %>%
+  summarise(
+    `Número de registros` = n(),
+    `Número de siniestros únicos` = n_distinct(Id),
+    `Paid total (miles €)` = round(sum(Paid, na.rm = TRUE) / 1000, 2),
+    `Promedio Paid (miles €)` = round(mean(Paid, na.rm = TRUE) / 1000, 2),
+    `Mínimo Paid (miles €)` = round(min(Paid, na.rm = TRUE) / 1000, 2),
+    `Máximo Paid (miles €)` = round(max(Paid, na.rm = TRUE) / 1000, 2)
+  ) %>%
+  mutate(`Año de origen` = as.character(AccYear)) %>%  # Convertimos a character
+  select(`Año de origen`, everything(), -AccYear)
+
+# Fila total
+fila_Paid <- panel5 %>%
+  summarise(
+    `Año de origen` = "Total",
+    `Número de registros` = n(),
+    `Número de siniestros únicos` = n_distinct(Id),
+    `Paid total (miles €)` = round(sum(Paid, na.rm = TRUE) / 1000, 2),
+    `Promedio Paid (miles €)` = round(mean(Paid, na.rm = TRUE) / 1000, 2),
+    `Mínimo Paid (miles €)` = round(min(Paid, na.rm = TRUE) / 1000, 2),
+    `Máximo Paid (miles €)` = round(max(Paid, na.rm = TRUE) / 1000, 2)
+  )
+
+# Combinamos
+tabla_Paid <- bind_rows(columnas_Paid, fila_Paid)
+
+# Imprimir
+print(tabla_Paid)
+
+
+library(ggplot2)
+tabla_Paid2 <- panel5 %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(
+    TotalPaid = sum(Paid, na.rm = TRUE),
+    N_IDs = n_distinct(Id)
+  ) %>%
+  ungroup()
+
+media_dev <- panel5 %>%
+  group_by(DevYear) %>%
+  summarise(MediaPaid = mean(Paid, na.rm = TRUE))
+
+ggplot(media_dev, aes(x = DevYear, y = MediaPaid)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Media de Paid por Año de Desarrollo",
+       x = "DevYear", y = "Media Paid") +
+  theme_minimal()
+
+
+```
+
+
+```{r}
+# Proporción de ceros
+mean(panel5$Paid == 0, na.rm = TRUE)
+
+# Filtrar valores mayores a 0
+Paid_sin_ceros <- panel5$Paid[panel5$Paid > 0]
+
+# Histograma de Paid (sin ceros)
+hist(Paid_sin_ceros, breaks = 200, main = "Distribución de Paid (sin ceros)", 
+     xlab = "Paid", col = "orange")
+
+# Boxplot para detectar outliers (sin ceros)
+boxplot(Paid_sin_ceros, main = "Boxplot de Paid (sin ceros)", 
+        horizontal = TRUE, col = "gold")
+
+# Estadísticos adicionales (sin ceros)
+sd(Paid_sin_ceros, na.rm = TRUE)
+quantile(Paid_sin_ceros, probs = c(0.01, 0.25, 0.5, 0.75, 0.99), na.rm = TRUE)
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+# Tabla resumen: suma de Paid por AccYear y DevYear
+tabla_Paid <- panel5 %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(
+    TotalPaid = sum(Paid, na.rm = TRUE),
+    N_IDs = n_distinct(Id)
+  ) %>%
+  ungroup()
+
+panel5 %>%
+  group_by(AccYear) %>%
+  summarise(
+    TotalPaid = sum(Paid, na.rm = TRUE),
+    N_IDs = n_distinct(Id)
+  ) %>%
+  ungroup()
+
+print(tabla_Paid)
+
+```
+
+
+```{r}
+# Relación de Paid con años de desarrollo y de ocurrencia
+boxplot(Paid ~ DevYear, data = panel5, main = "Paid por Año de Desarrollo", col = "lightblue")
+boxplot(Paid ~ AccYear, data = panel5, main = "Paid por Año de Ocurrencia", col = "lightpink")
+
+```
+```{r}
+# 1. Filtrar los casos con Paid > 0
+df_no_ceros <- panel5[panel5$Paid > 0 & !is.na(panel5$Age), ]
+
+# 2. Crear grupos de edad (ajusta los cortes si es necesario)
+df_no_ceros$EdadGrupo <- cut(df_no_ceros$Age, 
+                              breaks = c(18, 30, 40, 50, 60, 70, 80, Inf), 
+                              right = FALSE,
+                              labels = c("18-29", "30-39", "40-49", "50-59", "60-69", "70-79", "80+"))
+
+# 3. Estadísticos descriptivos por grupo de edad
+library(dplyr)
+
+resumen <- df_no_ceros %>%
+  group_by(EdadGrupo) %>%
+  summarise(
+    n = n(),
+    media = mean(Paid, na.rm = TRUE),
+    mediana = median(Paid, na.rm = TRUE),
+    sd = sd(Paid, na.rm = TRUE),
+    p25 = quantile(Paid, 0.25, na.rm = TRUE),
+    p75 = quantile(Paid, 0.75, na.rm = TRUE)
+  )
+
+print(resumen)
+
+# Calcular la media por grupo de edad
+media_por_grupo <- df_no_ceros %>%
+  group_by(EdadGrupo) %>%
+  summarise(media_Paid = mean(Paid, na.rm = TRUE))
+
+# Graficar
+ggplot(media_por_grupo, aes(x = EdadGrupo, y = media_Paid)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Media de Paid por grupo de edad (sin ceros)",
+       x = "Grupo de edad",
+       y = "Media de Paid") +
+  theme_minimal()
+# Calcular la suma total por grupo de edad
+suma_por_grupo <- df_no_ceros %>%
+  group_by(EdadGrupo) %>%
+  summarise(suma_Paid = sum(Paid, na.rm = TRUE))
+
+# Graficar
+ggplot(resumen, aes(x = EdadGrupo, y = media)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Media de Paid por grupo de edad ",
+       x = "Grupo de edad",
+       y = "Suma total de Paid") +
+  theme_minimal()
+
+
+
+# 5. Scatterplot con suavizado LOESS
+plot(df_no_ceros$Age, df_no_ceros$Paid, 
+     main = "Relación entre Edad y Paid (sin ceros)", 
+     xlab = "Edad", ylab = "Paid", pch = 20, col = rgb(0, 0, 0, 0.3))
+lines(lowess(df_no_ceros$Age, df_no_ceros$Paid), col = "red", lwd = 2)
+
+# 6. Correlaciones
+cor(df_no_ceros$Paid, df_no_ceros$Age, use = "complete.obs")                      # Pearson
+cor(df_no_ceros$Paid, df_no_ceros$Age, method = "spearman", use = "complete.obs") # Spearman
+
+```
+
+```{r}
+# Comparación de medias por grupo para variables categóricas
+aggregate(Paid ~ Type, data = panel5, mean)
+aggregate(Paid ~ Status, data = panel5, mean)
+aggregate(Paid ~ Status, data = panel5, sum)
+
+# Boxplot para visualizar la relación con variables categóricas
+boxplot(Paid ~ Type, data = panel5, main = "Paid por Tipo de Siniestro")
+boxplot(Paid ~ Status, data = panel5, main = "Paid por Estado")
+
+```
+```{r}
+table(panel5$Status)
+```
+
+
+# ENTRENAMIENTO Y DE PRUEBA
+
+```{r}
+set.seed(123)
+tamano_total5 <- nrow(panel5)
+tamano_muestra5 <- round(tamano_total5 * 0.15) # 15%
+indices_muestra5 <- sample(1:tamano_total5, size = tamano_muestra5)
+train_sample5 <- panel5[indices_muestra5, ]
+test_sample5 <- panel5[-indices_muestra5, ] # 85%
+
+# Solo años de ocurrencia históricos para entrenamiento
+train_sample5 <- train_sample5 %>% filter(AccYear <= 2021)
+```
+```{r}
+train_sample5 %>%
+  count(AccYear, DevYear, Status) %>%
+  arrange(AccYear, DevYear)
+# Miramos que no haya NA en variables 
+sum(is.na(train_sample5))
+```
+```{r}
+modelo <- lm(Paid ~ AccYear + DevYear + Type + Age + AccMonth + AccWeekday + RepDelDays + Status,data = panel5)
+summary(modelo)
+```
+
+
+# RANDOM FOREST
+
+```{r}
+train_sample5_RF<-train_sample5
+test_sample5_RF<-test_sample5
+
+rf_model5 <- randomForest(
+  Paid ~ AccYear + DevYear + Type + Age + AccMonth + AccWeekday + RepDelDays + Status,
+  data = train_sample5_RF,
+  ntree = 30,
+  importance = TRUE)
+
+importance(rf_model5)
+```
+
+## PREDICCIÓN DEL ERROR (TEST)
+
+PREDICCIÓN
+
+```{r}
+# Predice pagos incrementales para el test
+test_sample5_RF$Paid_pred <- predict(rf_model5, newdata = test_sample5_RF)
+
+```
+
+Cálculo del RMSE y NRMSE
+
+```{r}
+# Calcula el MSE
+MSE_RF <- mean((test_sample5_RF$Paid - test_sample5_RF$Paid_pred)^2, na.rm = TRUE)
+
+# RMSE
+RMSE_RF <- sqrt(MSE_RF)
+
+# NRMSE normalizado por el rango
+max_ult <- max(test_sample5_RF$Paid, na.rm = TRUE)
+min_ult <- min(test_sample5_RF$Paid, na.rm = TRUE)
+NRMSE_RF <- RMSE_RF / (max_ult - min_ult)
+
+# Mostrar resultados
+cat("RMSE:", RMSE_RF, "\n")
+cat("NRMSE:", NRMSE_RF, "\n")
+```
+
+## BBDD Pagos Futuros
+```{r}
+# Para cada AccYear, identificar el máximo DevYear con datos reales
+rf_max_dev_by_accyear5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  group_by(AccYear) %>%
+  summarise(max_dev = max(DevYear[Paid > 0], na.rm = TRUE)) 
+```
+
+```{r}
+# Unión del máximo DevYear al panel
+rf_panel_futuro5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  left_join(rf_max_dev_by_accyear5, by = "AccYear") %>%
+  filter(DevYear > max_dev)  
+```
+
+```{r}
+table(rf_panel_futuro5$AccYear)
+```
+
+## Predicción de pagos incrementales futuros
+
+```{r}
+rf_panel_futuro5$Paid_pred <- predict(rf_model5, newdata = rf_panel_futuro5)
+rf_panel_futuro5$Paid_pred <- pmax(rf_panel_futuro5$Paid_pred, 0)
+```
+
+## Construcción de triángulos
+
+*Triángulo real*
+
+```{r}
+# Triángulo real (pagos históricos)
+triangle_real5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid, na.rm = TRUE), .groups = "drop")
+
+triangle_real_wide5 <- triangle_real5 %>%
+  pivot_wider(
+    names_from = DevYear,
+    values_from = Paid,
+    names_sort = TRUE 
+  )
+
+print(triangle_real_wide5/1000)
+```
+
+*Triángulo futuro*
+
+```{r}
+#Triángulo futuro (pagos predichos)
+rf_triangle_pred_futuro5 <- rf_panel_futuro5 %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid_pred, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::spread(key = DevYear, value = Paid)
+
+print(rf_triangle_pred_futuro5)
+```
+
+```{r}
+ggplot(rf_triangle_pred_futuro5 %>% gather(DevYear, Paid, -AccYear), 
+       aes(x = as.numeric(DevYear), y = Paid, group = AccYear, color = as.factor(AccYear))) +
+  geom_line() + geom_point() +
+  labs(title = "Pagos predichos por año de desarrollo RF", x = "Año de desarrollo", y = "Pago predicho")
+
+rf_triangle_pred_futuro5_long <- rf_triangle_pred_futuro5 %>%
+  pivot_longer(
+    cols = -AccYear,
+    names_to = "DevYear",
+    values_to = "Paid"
+  ) %>%
+  mutate(DevYear = as.numeric(DevYear))
+
+# Gráfico de líneas por año de ocurrencia
+ggplot(rf_triangle_pred_futuro5_long, aes(x = DevYear, y = Paid, color = as.factor(AccYear))) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Pagos predichos por año de desarrollo (Random Forest)",
+    x = "Año de desarrollo",
+    y = "Pago predicho",
+    color = "Año de ocurrencia"
+  ) +
+  theme_minimal()
+
+```
+
+*Triángulo combinado (real + predicho)*
+```{r}
+# Triángulo futuro (pagos predichos, ya truncados a cero)
+rf_triangle_futuro5 <- rf_panel_futuro5 %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid_pred, na.rm = TRUE), .groups = "drop")
+
+# Combina ambos: si hay predicción, úsala; si no, usa el valor real
+rf_triangle_completo5 <- bind_rows(triangle_real5, rf_triangle_futuro5) %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::spread(key = DevYear, value = Paid)
+
+rf_triangle_completo5<-rf_triangle_completo5/1000
+print(rf_triangle_completo5) #Desacumulado
+```
+
+
+*Triangulo acumulado*
+```{r}
+rf_triangle_acumulado5 <- rf_triangle_completo5
+rf_triangle_acumulado5[,-1] <- t(apply(rf_triangle_completo5[,-1], 1, cumsum))
+print(rf_triangle_acumulado5)
+```
+
+*VPF RF*
+
+```{r}
+#vector de pagos futuros
+vpf.rf5 <- rep(0, 9 - 1) 
+for (k in 1:8) {
+  future <- row(rf_triangle_completo5) + col(rf_triangle_completo5) - 1 == 9 + k
+  vpf.rf5[k] <- sum(rf_triangle_completo5[future])
+} 
+vpf_RF5<-vpf.rf5;vpf_RF5
+```
+
+*Pagos futuros  RF*
+
+```{r}
+PF_RF5<-sum(vpf_RF5);PF_RF5
+```
+*Renta Vencida ETI a 5 de mayo de 2025*
+
+```{r}
+ETI.V<- c(0.02119,0.02045,0.02118,0.02199,0.02275,0.02353,0.02428,0.02496)
+```
+
+```{r}
+i.renta5<-numeric(length(ETI.V))
+for (i in 1:length(ETI.V)) {i.renta5[i]<- (1+ETI.V[i])^(-i)}; i.renta5
+prov.renta_RF5<-sum(vpf_RF5*i.renta5); prov.renta_RF5
+```
+Renta vencida
+
+```{r}
+prov.renta_RF5<-sum(vpf_RF5*i.renta5); prov.renta_RF5
+```
+
+
+
+
+# LASSO
+
+```{r}
+train_sample5_lasso<-train_sample5
+test_sample5_lasso<-test_sample5
+```
+
+```{r}
+X_train <- model.matrix(
+  Paid ~ AccYear + DevYear + Type + Age + AccMonth + AccWeekday + RepDelDays + Status,
+  data = train_sample5_lasso)[, -1]
+y_train <- train_sample5_lasso$Paid
+
+X_test <- model.matrix(
+  Paid ~ AccYear + DevYear + Type + Age + AccMonth + AccWeekday + RepDelDays + Status,
+  data = test_sample5_lasso)[, -1]
+y_test <- test_sample5_lasso$Paid
+
+set.seed(123)
+cv_lasso <- cv.glmnet(X_train, y_train, alpha = 1, nfolds = 5) # alpha=1 para Lasso
+
+# Lambda óptimo
+lambda_opt <- cv_lasso$lambda.min
+
+# Ajusta el modelo final
+lasso_model <- glmnet(X_train, y_train, alpha = 1, lambda = lambda_opt)
+
+coef_lasso <- coef(lasso_model)
+print(coef_lasso)
+# Las variables con coeficiente distinto de cero son las seleccionadas por Lasso
+
+```
+
+
+## PREDICCIÓN DEL ERROR (TEST)
+
+PREDICCIÓN
+
+```{r}
+# Predice pagos incrementales para el test
+test_sample5_lasso$Paid_pred_lasso <- predict(lasso_model, newx = X_test, s = lambda_opt)
+```
+
+Cálculo del RMSE y NRMSE
+
+```{r}
+# RMSE
+rmse_lasso <- sqrt(mean((y_test - test_sample5_lasso$Paid_pred_lasso)^2, na.rm = TRUE))
+# rNMSE relativo a la media
+rnmse_lasso <- rmse_lasso / mean(y_test, na.rm = TRUE)
+# NRMSE por rango
+nrmse_lasso <- rmse_lasso / (max(y_test, na.rm = TRUE) - min(y_test, na.rm = TRUE))
+
+cat("RMSE:", rmse_lasso, "\n")
+cat("rNMSE (media):", rnmse_lasso, "\n")
+cat("NRMSE (rango):", nrmse_lasso, "\n")
+```
+
+## BBDD Pagos futuros
+
+```{r}
+# Para cada AccYear, identificar el máximo DevYear con datos reales
+lasso_max_dev_by_accyear5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  group_by(AccYear) %>%
+  summarise(max_dev = max(DevYear[Paid > 0], na.rm = TRUE)) 
+```
+
+```{r}
+# Unión del máximo DevYear al panel
+lasso_panel_futuro5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  left_join(lasso_max_dev_by_accyear5, by = "AccYear") %>%
+  filter(DevYear > max_dev)  
+```
+
+```{r}
+table(lasso_panel_futuro5$AccYear)
+```
+
+## Predicción de pagos incrementales futuros
+
+```{r}
+X_futuro <- model.matrix(
+  Paid ~ AccYear + DevYear + Type + Age + AccMonth + AccWeekday + RepDelDays + Status,
+  data = lasso_panel_futuro5)[, -1]
+
+lasso_panel_futuro5$Paid_pred_lasso <- predict(lasso_model, newx = X_futuro, s = lambda_opt)
+lasso_panel_futuro5$Paid_pred_lasso <- pmax(lasso_panel_futuro5$Paid_pred_lasso, 0)
+```
+
+
+## Construcción de triángulos
+
+*Triángulo real*
+
+```{r}
+# Triángulo real (pagos históricos)
+triangle_real5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid, na.rm = TRUE), .groups = "drop")
+
+triangle_real_wide5 <- triangle_real5 %>%
+  pivot_wider(
+    names_from = DevYear,
+    values_from = Paid,
+    names_sort = TRUE )
+
+print(triangle_real_wide5/1000)
+```
+
+*Triángulo futuro*
+
+```{r}
+#Triángulo futuro (pagos predichos)
+lasso_triangle_pred_futuro5 <- lasso_panel_futuro5 %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid_pred_lasso, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::spread(key = DevYear, value = Paid)
+
+print(lasso_triangle_pred_futuro5)
+
+lasso_triangle_pred_futuro5_long <- lasso_triangle_pred_futuro5 %>%
+  pivot_longer(
+    cols = -AccYear,
+    names_to = "DevYear",
+    values_to = "Paid"
+  ) %>%
+  mutate(DevYear = as.numeric(DevYear))
+
+# Gráfico de líneas por año de ocurrencia
+ggplot(lasso_triangle_pred_futuro5_long, aes(x = DevYear, y = Paid, color = as.factor(AccYear))) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Pagos predichos por año de desarrollo (Lasso)",
+    x = "Año de desarrollo",
+    y = "Pago predicho",
+    color = "Año de ocurrencia"
+  ) +
+  theme_minimal()
+
+```
+
+*Triángulo combinado (real + predicho)*
+```{r}
+# Triángulo futuro (pagos predichos, ya truncados a cero)
+lasso_triangle_futuro5 <- lasso_panel_futuro5 %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid_pred_lasso, na.rm = TRUE), .groups = "drop")
+
+# Combina ambos: si hay predicción, úsala; si no, usa el valor real
+lasso_triangle_completo5 <- bind_rows(triangle_real5, lasso_triangle_futuro5) %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::spread(key = DevYear, value = Paid)
+
+lasso_triangle_completo5<-lasso_triangle_completo5/1000
+#-Triangulo individuales por año de desarrollo, NO acumulados
+print(lasso_triangle_completo5) #Desacumulado
+```
+
+
+*Triangulo acumulado*
+```{r}
+lasso_triangle_acumulado5 <- lasso_triangle_completo5
+lasso_triangle_acumulado5[,-1] <- t(apply(lasso_triangle_acumulado5[,-1], 1, cumsum))
+print(lasso_triangle_acumulado5)
+```
+
+*VPF LASSO*
+
+```{r}
+#vector de pagos futuros
+vpf.lasso5 <- rep(0, 9 - 1) 
+for (k in 1:9 - 1) {
+  future <- row(lasso_triangle_completo5) + col(lasso_triangle_completo5) - 1 == 9 + k
+  vpf.lasso5[k] <- sum(lasso_triangle_completo5[future])
+} 
+vpf_LASSO5<-vpf.lasso5;vpf_LASSO5
+```
+
+*Pagos futuros  LASSO*
+
+```{r}
+PF_LASSO5<-sum(vpf_LASSO5);PF_LASSO5
+```
+*Renta Vencida ETI a 5 de mayo de 2025*
+
+```{r}
+ETI.V<- c(0.02119,0.02045,0.02118,0.02199,0.02275,0.02353,0.02428,0.02496)
+```
+
+```{r}
+i.renta5<-numeric(length(ETI.V))
+for (i in 1:length(ETI.V)) {i.renta5[i]<- (1+ETI.V[i])^(-i)}; i.renta5
+prov.renta_LASSO5<-sum(vpf_LASSO5*i.renta5); prov.renta_LASSO5
+```
+Renta vencida
+
+```{r}
+prov.renta_LASSO5<-sum(vpf_LASSO5*i.renta5); prov.renta_LASSO5
+```
+
+
+
+
+# GLM
+
+```{r}
+train_sample5_glm<-train_sample5
+test_sample5_glm<-test_sample5
+```
+
+```{r}
+# Entrena el modelo GLM Poisson con link log
+model_glm5 <- glm(
+  Paid ~ AccYear + DevYear + Type + Age + AccMonth + AccWeekday + RepDelDays + Status,
+  data = train_sample5_glm,
+  family = poisson(link = "log"))
+summary(model_glm5)
+```
+
+
+## PREDICCIÓN DEL ERROR (TEST)
+
+PREDICCIÓN
+
+```{r}
+# Predice pagos incrementales para el test
+test_sample5_glm$Paid_pred_glm <- predict(model_glm5, newdata = test_sample5_glm, type = "response")
+```
+
+Cálculo del RMSE y NRMSE
+
+```{r}
+# RMSE
+rmse_glm <- sqrt(mean((test_sample5_glm$Paid - test_sample5_glm$Paid_pred_glm)^2, na.rm = TRUE))
+# rNMSE relativo a la media
+rnmse_glm <- rmse_glm / mean(test_sample5_glm$Paid, na.rm = TRUE)
+# NRMSE por rango
+nrmse_glm <- rmse_glm / (max(test_sample5_glm$Paid, na.rm = TRUE) - min(test_sample5_glm$Paid, na.rm = TRUE))
+
+cat("RMSE:", rmse_glm, "\n")
+cat("rNMSE (media):", rnmse_glm, "\n")
+cat("NRMSE (rango):", nrmse_glm, "\n")
+
+```
+
+## BBDD Pagos futuros
+
+```{r}
+# Para cada AccYear, identificar el máximo DevYear con datos reales
+glm_max_dev_by_accyear5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  group_by(AccYear) %>%
+  summarise(max_dev = max(DevYear[Paid > 0], na.rm = TRUE)) 
+
+# Unión del máximo DevYear al panel
+glm_panel_futuro5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  left_join(glm_max_dev_by_accyear5, by = "AccYear") %>%
+  filter(DevYear > max_dev)  # Solo los años de desarrollo futuros (incompletos)
+
+```
+
+
+```{r}
+table(glm_panel_futuro5$AccYear)
+```
+
+## Predicción de pagos incrementales futuros
+
+```{r}
+glm_panel_futuro5$Paid_pred_glm <- predict(model_glm5, newdata = glm_panel_futuro5, type = "response")
+glm_panel_futuro5$Paid_pred_glm <- pmax(glm_panel_futuro5$Paid_pred_glm, 0)
+```
+
+
+## Construcción de triángulos
+
+*Triángulo real*
+
+```{r}
+# Triángulo real (pagos históricos)
+triangle_real5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid, na.rm = TRUE), .groups = "drop")
+
+triangle_real_wide5 <- triangle_real5 %>%
+  pivot_wider(
+    names_from = DevYear,
+    values_from = Paid,
+    names_sort = TRUE 
+  )
+
+print(triangle_real_wide5/1000)
+```
+
+*Triángulo futuro*
+
+```{r}
+#Triángulo futuro (pagos predichos)
+glm_triangle_pred_futuro5 <- glm_panel_futuro5 %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid_pred_glm, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::spread(key = DevYear, value = Paid)
+
+print(glm_triangle_pred_futuro5)
+
+glm_triangle_pred_futuro5_long <- glm_triangle_pred_futuro5 %>%
+  pivot_longer(
+    cols = -AccYear,
+    names_to = "DevYear",
+    values_to = "Paid"
+  ) %>%
+  mutate(DevYear = as.numeric(DevYear))
+
+# Gráfico de líneas por año de ocurrencia
+ggplot(glm_triangle_pred_futuro5_long, aes(x = DevYear, y = Paid, color = as.factor(AccYear))) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Pagos predichos por año de desarrollo (GLM)",
+    x = "Año de desarrollo",
+    y = "Pago predicho",
+    color = "Año de ocurrencia"
+  ) +
+  theme_minimal()
+```
+*Triángulo combinado (real + predicho)*
+```{r}
+glm_triangle_futuro5 <- glm_panel_futuro5 %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid_pred_glm, na.rm = TRUE), .groups = "drop")
+
+glm_triangle_completo5 <- bind_rows(triangle_real5, glm_triangle_futuro5) %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::spread(key = DevYear, value = Paid)
+
+glm_triangle_completo5 <- glm_triangle_completo5/1000
+print(glm_triangle_completo5)
+
+write.csv(glm_triangle_completo5, file = "GLM_ML_Triangulo_desacumulado", row.names = FALSE)
+```
+
+
+*Triangulo acumulado*
+```{r}
+glm_triangle_acumulado5 <- glm_triangle_completo5
+glm_triangle_acumulado5[,-1] <- t(apply(glm_triangle_acumulado5[,-1], 1, cumsum))
+print(glm_triangle_acumulado5)
+
+```
+
+*VPF GLM*
+
+```{r}
+# Vector de pagos futuros
+vpf.glm5 <- rep(0, 9 - 1) 
+for (k in 1:8) {
+  future <- row(glm_triangle_completo5) + col(glm_triangle_completo5) - 1 == 9 + k
+  vpf.glm5[k] <- sum(glm_triangle_completo5[future])
+} 
+vpf_GLM5 <- vpf.glm5; vpf_GLM5
+
+# Pagos futuros totales
+PF_GLM5 <- sum(vpf_GLM5); PF_GLM5
+
+# Renta vencida ETI a 5 de mayo de 2025
+ETI.V <- c(0.02119,0.02045,0.02118,0.02199,0.02275,0.02353,0.02428,0.02496)
+i.renta5 <- numeric(length(ETI.V))
+for (i in 1:length(ETI.V)) {i.renta5[i] <- (1+ETI.V[i])^(-i)}
+prov.renta_GLM5 <- sum(vpf_GLM5 * i.renta5); prov.renta_GLM5
+
+```
+
+
+# KNN
+
+```{r}
+library(FNN)
+
+
+# Selecciona variables y elimina NAs
+train_knn <- train_sample5 %>%
+  select(Paid, AccYear, DevYear, Type, Age, AccMonth, AccWeekday, RepDelDays, Status) %>%
+  na.omit()
+
+test_knn <- test_sample5 %>%
+  select(Paid, AccYear, DevYear, Type, Age, AccMonth, AccWeekday, RepDelDays, Status) %>%
+  na.omit()
+
+# Convierte factores a variables dummy
+train_knn_mat <- model.matrix(
+  Paid ~ AccYear + DevYear + Type + Age + AccMonth + AccWeekday + RepDelDays + Status,
+  data = train_knn
+)[, -1]
+y_train <- train_knn$Paid
+
+test_knn_mat <- model.matrix(
+  Paid ~ AccYear + DevYear + Type + Age + AccMonth + AccWeekday + RepDelDays + Status,
+  data = test_knn
+)[, -1]
+y_test <- test_knn$Paid
+
+```
+
+## PREDICCIÓN DEL ERROR (TEST)
+
+PREDICCIÓN
+```{r}
+set.seed(123)
+k <- 5
+knn_pred <- knn.reg(
+  train = train_knn_mat,
+  test = test_knn_mat,
+  y = y_train,
+  k = k
+)$pred
+
+test_knn$Paid_pred_knn <- pmax(knn_pred, 0)
+
+```
+
+Cálculo del RMSE y NRMSE
+
+```{r}
+rmse_knn <- sqrt(mean((y_test - test_knn$Paid_pred_knn)^2, na.rm = TRUE))
+rnmse_knn <- rmse_knn / mean(y_test, na.rm = TRUE)
+nrmse_knn <- rmse_knn / (max(y_test, na.rm = TRUE) - min(y_test, na.rm = TRUE))
+
+cat("RMSE:", rmse_knn, "\n")
+cat("rNMSE (media):", rnmse_knn, "\n")
+cat("NRMSE (rango):", nrmse_knn, "\n")
+
+
+```
+
+## BBDD Pagos futuros
+
+```{r}
+# Para cada AccYear, identificar el máximo DevYear con datos reales
+knn_max_dev_by_accyear5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  group_by(AccYear) %>%
+  summarise(max_dev = max(DevYear[Paid > 0], na.rm = TRUE)) 
+
+# Unión del máximo DevYear al panel
+knn_panel_futuro5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  left_join(knn_max_dev_by_accyear5, by = "AccYear") %>%
+  filter(DevYear > max_dev) 
+
+table(knn_panel_futuro5$AccYear)
+```
+
+## Predicción de pagos incrementales futuros
+
+```{r}
+futuro_knn_mat <- model.matrix(
+  Paid ~ AccYear + DevYear + Type + Age + AccMonth + AccWeekday + RepDelDays + Status,
+  data = knn_panel_futuro5
+)[, -1]
+
+futuro_knn_pred <- knn.reg(
+  train = train_knn_mat,
+  test = futuro_knn_mat,
+  y = y_train,
+  k = k
+)$pred
+
+knn_panel_futuro5$Paid_pred_knn <- pmax(futuro_knn_pred, 0)
+```
+
+
+## Construcción de triángulos
+
+*Triángulo real*
+
+```{r}
+# Triángulo real (pagos históricos)
+triangle_real5 <- panel5 %>%
+  filter(AccYear <= 2021) %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid, na.rm = TRUE), .groups = "drop")
+
+triangle_real_wide5 <- triangle_real5 %>%
+  pivot_wider(
+    names_from = DevYear,
+    values_from = Paid,
+    names_sort = TRUE 
+  )
+
+print(triangle_real_wide5/1000)
+```
+
+*Triángulo futuro*
+
+```{r}
+#Triángulo futuro (pagos predichos)
+knn_triangle_pred_futuro5 <- knn_panel_futuro5 %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid_pred_knn, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::spread(key = DevYear, value = Paid)
+
+print(knn_triangle_pred_futuro5)
+```
+
+```{r}
+knn_triangle_pred_futuro5_long <- knn_triangle_pred_futuro5 %>%
+  pivot_longer(
+    cols = -AccYear,
+    names_to = "DevYear",
+    values_to = "Paid"
+  ) %>%
+  mutate(DevYear = as.numeric(DevYear))
+
+# Gráfico de líneas por año de ocurrencia
+ggplot(knn_triangle_pred_futuro5_long, aes(x = DevYear, y = Paid, color = as.factor(AccYear))) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Pagos predichos por año de desarrollo (KNN)",
+    x = "Año de desarrollo",
+    y = "Pago predicho",
+    color = "Año de ocurrencia"
+  ) +
+  theme_minimal()
+```
+
+*Triángulo combinado (real + predicho)*
+```{r}
+knn_triangle_futuro5 <- knn_panel_futuro5 %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid_pred_knn, na.rm = TRUE), .groups = "drop")
+
+knn_triangle_completo5 <- bind_rows(triangle_real5, knn_triangle_futuro5) %>%
+  group_by(AccYear, DevYear) %>%
+  summarise(Paid = sum(Paid, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::spread(key = DevYear, value = Paid)
+
+knn_triangle_completo5 <- knn_triangle_completo5/1000
+print(knn_triangle_completo5)
+
+write.csv(knn_triangle_completo5, file = "KNN_Triangulo_desacumulado", row.names = FALSE)
+```
+
+
+*Triangulo acumulado*
+```{r}
+knn_triangle_acumulado5 <- knn_triangle_completo5
+knn_triangle_acumulado5[,-1] <- t(apply(knn_triangle_acumulado5[,-1], 1, cumsum))
+print(knn_triangle_acumulado5)
+```
+
+*VPF KNN*
+
+```{r}
+# Vector de pagos futuros
+vpf.knn5 <- rep(0, 9 - 1) 
+for (k in 1:8) {
+  future <- row(knn_triangle_completo5) + col(knn_triangle_completo5) - 1 == 9 + k
+  vpf.knn5[k] <- sum(knn_triangle_completo5[future])
+} 
+vpf_KNN5 <- vpf.knn5; vpf_KNN5
+
+# Pagos futuros totales
+PF_KNN5 <- sum(vpf_KNN5); PF_KNN5
+
+# Renta vencida ETI a 5 de mayo de 2025
+ETI.V <- c(0.02119,0.02045,0.02118,0.02199,0.02275,0.02353,0.02428,0.02496)
+i.renta5 <- numeric(length(ETI.V))
+for (i in 1:length(ETI.V)) {i.renta5[i] <- (1+ETI.V[i])^(-i)}
+prov.renta_KNN5 <- sum(vpf_KNN5 * i.renta5); prov.renta_KNN5
+```
+
+
+
+
+# MÉTODOS TRADICIONALES 
+
+```{r}
+
+# Lista de vectores, uno por cada AccYear
+triangle_vectors <- lapply(1:nrow(triangle_real_wide5), function(i) as.numeric(triangle_real_wide5[i, -1]))
+names(triangle_vectors) <- triangle_real_wide5$AccYear
+
+# Datos del triángulo de siniestros, 
+# Años de origen (filas) y años de desarrollo (columnas)
+c0 = triangle_vectors[["2013"]];c0<-c0[c(1:9)];c0
+c1 = triangle_vectors[["2014"]];c1<-c1[c(1:8)];c1
+c2 = triangle_vectors[["2015"]];c2<-c2[c(1:7)];c2
+c3 = triangle_vectors[["2016"]];c3<-c3[c(1:6)];c3
+c4 = triangle_vectors[["2017"]];c4<-c4[c(1:5)];c4
+c5 = triangle_vectors[["2018"]];c5<-c5[c(1:4)];c5
+c6 = triangle_vectors[["2019"]];c6<-c6[c(1:3)];c6
+c7 = triangle_vectors[["2020"]];c7<-c7[c(1:2)];c7
+c8 = triangle_vectors[["2021"]];c8<-c8[1];c8
+
+C0 <- cumsum(c0);C0
+C1 <- c(cumsum(c1),NA);C1
+C2 <- c(cumsum(c2),NA,NA);C2
+C3 <- c(cumsum(c3),NA,NA,NA);C3
+C4 <- c(cumsum(c4),NA,NA,NA,NA);C4
+C5 <- c(cumsum(c5),NA,NA,NA,NA,NA);C5
+C6 <- c(cumsum(c6),NA,NA,NA,NA,NA,NA);C6
+C7 <- c(cumsum(c7),NA,NA,NA,NA,NA,NA,NA);C7
+C8 <- c(cumsum(c8),NA,NA,NA,NA,NA,NA,NA,NA);C8
+
+C <- matrix(c(C0,C1,C2,C3,C4,C5,C6,C7,C8),nrow=9,ncol=9)
+C <- t(C); 
+C <- as.triangle(C);
+C<-C/1000;C
+```
+
+
+
+## Método Mack Chain-Ladder
+Estan /1000
+```{r}
+library(ChainLadder)
+mch <- MackChainLadder(C); mch
+names(mch)
+```
+
+
+```{r}
+# Triángulo completo estimado con Mack
+triangle_mack_completo = mch$FullTriangle
+triangle_mack_completo #Acumulado
+```
+*Triangulo completo*
+
+```{r}
+mch$FullTriangle # Triangulo completo
+mch$f # Factor de desarrollo
+```
+
+*VPF Mack*
+
+```{r}
+# En FullTriangle está el acumulado, lo desacumulamos para obtener el VPF
+a<-matrix(c(rep(0,dim(C)[1]),mch$FullTriangle),nrow=dim(C)[1],ncol=dim(C)[1]);a
+noncumFullTriangle<-mch$FullTriangle-a; noncumFullTriangle  # Desacumulado
+
+write.csv(noncumFullTriangle, file = "MM_MT_Triangulo_desacumulado", row.names = FALSE)
+```
+
+*Vector de pagos futuros*
+```{r}
+vpf.mm <- rep(0, dim(C)[1] - 1) #me va a hacer un vector de 0 con dim k
+for (k in 1:dim(C)[1] - 1) {
+  future <- row(noncumFullTriangle) + col(noncumFullTriangle) - 1 == dim(C)[1] + k
+  vpf.mm[k] <- sum(noncumFullTriangle[future])
+}
+vpf_MM<-vpf.mm;vpf_MM
+```
+
+*Pagos futuros  Mack*
+
+```{r}
+PF_MM<-sum(vpf_MM);PF_MM
+```
+*Renta Vencida ETI a 5 de mayo de 2025*
+
+```{r}
+ETI.V<- c(0.02119,0.02045,0.02118,0.02199,0.02275,0.02353,0.02428,0.02496)
+```
+
+
+```{r}
+i.renta<-numeric(length(ETI.V))
+for (i in 1:length(ETI.V)) {i.renta[i]<- (1+ETI.V[i])^(-i)}; i.renta
+prov.renta_MM<-sum(vpf_MM*i.renta); prov.renta_MM
+```
+Renta vencida
+```{r}
+prov.renta_MM<-sum(vpf_MM*i.renta); prov.renta_MM
+```
+
+## Modelo lineal generalizado con distribución Poisson (sobredispersa) y función de enlace logarítmica
+
+```{r}
+glmformula<-glmReserve(C,var.power = 1, link.power = 0, mse.method = "formula"); glmformula
+
+names(glmformula)
+glmformula$FullTriangle
+glmformula$model
+
+Cincr <- cum2incr(C)
+Ccum <- incr2cum(Cincr)
+
+# Lo mismo para el resultado glmformula$FullTriangle:
+noncumFullTriangle <- cum2incr(glmformula$FullTriangle); noncumFullTriangle
+write.csv(noncumFullTriangle, file = "GLM_MT_Triangulo_desacumulado", row.names = FALSE)
+vpf.mlg.mt <- rep(0, dim(C)[1] - 1)
+for (k in 1:dim(C)[1] - 1) {
+future <- row(noncumFullTriangle) + col(noncumFullTriangle) - 1 == dim(C)[1] + k
+  vpf.mlg.mt[k] <- sum(noncumFullTriangle[future])
+}
+vpf_MLG_MT<-vpf.mlg.mt; vpf_MLG_MT
+```
+
+
+Pagos futuros
+```{r}
+PF_MLG_MT<-sum(vpf_MLG_MT);PF_MLG_MT
+```
+
+Renta vencida
+```{r}
+prov.renta_MLG_MT<-sum(vpf_MLG_MT*i.renta); prov.renta_MLG_MT
+```
+
+
+# COMPARACIÓN DE MÉTODOS
+
+```{r}
+comparativa <- data.frame(
+  Método = c(
+    "MT Mack CL",
+    "MT GLM (Poisson)",
+    "ML Random Forest",
+    "ML Lasso",
+    "ML GLM",
+    "ML KNN"
+  ),
+  PagosFuturos = c(
+    PF_MM,         # resultado método Mack
+    PF_MLG_MT,      # resultado GLM Poisson tradicional
+    PF_RF5,           # resultado Random Forest
+    PF_LASSO5,        # resultado Lasso
+    PF_GLM5,          # resultado GLM ML
+    PF_KNN5           # resultado KNN
+  ),
+  ProvisiónRentaVencida = c(
+    prov.renta_MM,      # provisión Mack
+    prov.renta_MLG_MT,   # provisión GLM Poisson tradicional
+    prov.renta_RF5,        # provisión Random Forest
+    prov.renta_LASSO5,     # provisión Lasso
+    prov.renta_GLM5,       # provisión GLM ML
+    prov.renta_KNN5        # provisión KNN
+  )
+)
+
+print(comparativa)
+
+write.csv(comparativa, file = "comparativa.csv", row.names = FALSE)
+
+```
+
+```{r}
+comparativa_errores <- data.frame(
+  Método = c(
+    "Random Forest",
+    "Lasso",
+    "GLM ML",
+    "KNN"
+  ),
+  RMSE = c(
+    RMSE_RF,        # RMSE Random Forest
+    rmse_lasso,     # RMSE Lasso
+    rmse_glm,       # RMSE GLM ML
+    rmse_knn        # RMSE KNN
+  ),
+  NRMSE = c(
+    NRMSE_RF,       # NRMSE Random Forest
+    nrmse_lasso,    # NRMSE Lasso
+    nrmse_glm,      # NRMSE GLM ML
+    nrmse_knn       # NRMSE KNN
+  )
+)
+
+print(comparativa_errores)
+write.csv(comparativa_errores, file = "comparativa_errores", row.names = FALSE)
+
+```
+
+```{r}
+library(ggplot2)
+library(tidyr)
+
+comparativa_long <- pivot_longer(
+  comparativa,
+  cols = c("PagosFuturos", "ProvisiónRentaVencida"),
+  names_to = "Indicador",
+  values_to = "Valor"
+)
+
+colores_azules <- c("PagosFuturos" = "#377eb8",    
+                    "ProvisiónRentaVencida" = "#4daf4a") 
+
+colores_azules <- c("PagosFuturos" = "#1f78b4", 
+                    "ProvisiónRentaVencida" = "#a6cee3")
+
+g<-ggplot(comparativa_long, aes(x = Método, y = Valor, fill = Indicador)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  scale_fill_manual(values = colores_azules, 
+                    labels = c("Pagos Futuros", "Provisión Renta Vencida")) +
+  labs(
+    title = "Comparativa de Métodos: Pagos Futuros y Provisión Renta Vencida",
+    x = "Método",
+    y = "Euros",
+    fill = "Indicador"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+ggsave("comparativa_metodos.pdf", plot = g, width = 9, height = 5)
+g
+```
